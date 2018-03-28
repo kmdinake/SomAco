@@ -1,4 +1,4 @@
-#!usr/bin/bash
+#!usr/bin/python
 from sklearn.datasets import load_iris
 from scipy.spatial.distance import euclidean
 import numpy as np
