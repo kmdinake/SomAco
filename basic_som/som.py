@@ -1,11 +1,11 @@
-#!usr/bin/python
+#!usr/bin/bash
 from sklearn.datasets import load_iris
 from scipy.spatial.distance import euclidean
 import numpy as np
 
 
 class SOM(object):
-    def __init__(self, epochs=100):
+    def __init__(self, epochs=10000):
         self.X = None  # Number of Cols
         self.Y = None  # Number of Rows
         self.map = None
@@ -13,39 +13,59 @@ class SOM(object):
         self.tau_1 = 0
         self.tau_2 = 0
         self.kernel_width = 0  # aka the neighborhood radius
-        self.initial_kernel_width = 0
+        self.initial_kernel_width = 2
         self.learning_rate = 0
-        self.initial_learning_rate = 0
+        self.initial_learning_rate = 1.0
 
     def train(self, samples):
         self.__initialize(samples)
         stopping_condition = False
         epoch_counter = 0
+        sliding_window = 30
+        quantization_errors = [0 for i in range(len(samples))]
+        avg_quantization_errors = [0 for i in range(len(samples))]
+        std_dev_quantization_errors = [0 for i in range(len(samples))]
         self.__reshuffle_samples(samples)
+        lowest_std_dev_quantization_err = np.inf
         while not stopping_condition:
-            print("Epoch {}".format(self.epochs))
+            print("Epoch {}".format(epoch_counter))
+            print("Std.Dev Quantization Training Error: {}".format(std_dev_quantization_errors[-1]))
+            print("Lowest Std.Dev Training Error: {}".format(lowest_std_dev_quantization_err))
             for t in range(len(samples)):
                 print("Training Iteration {}".format(t))
                 bmu = self.__find_bmu(samples[t])
                 for row in range(self.Y):
                     for col in range(self.X):
                         self.map[row][col] = self.__update_weight(samples[t], bmu, self.map[row][col])
+                # Calculate Training Error: Avg, Std.Dev
+                q_error = euclidean(u=samples[t], v=bmu)
+                quantization_errors[t] = q_error
+                if t > sliding_window - 1:
+                    quantization_error = 0.0
+                    for t_hat in range(sliding_window):
+                        quantization_error += quantization_errors[t - t_hat]
+                    avg_quantization_errors[t] = quantization_error / sliding_window
+                    sum_sqr_diff = 0.0
+                    for t_hat in range(sliding_window):
+                        sum_sqr_diff += np.power((quantization_errors[t - t_hat] - avg_quantization_errors[t]), 2)
+                    std_dev_quantization_errors[t] = np.sqrt((sum_sqr_diff / (sliding_window - 1)))
+                    if std_dev_quantization_errors[t] < lowest_std_dev_quantization_err:
+                        lowest_std_dev_quantization_err = std_dev_quantization_errors[t]
                 self.__update_learning_rate(t)
                 self.__update_kernel_width(t)
             epoch_counter += 1
-            self.__reshuffle_samples(samples)
-            if epoch_counter >= self.epochs:  # lowTrainingError and epochCounter
+            self.__reshuffle_samples(samples)  # stochastic element to algorithm
+            # lowTrainingError and epochCounter
+            if (0 <= np.round(lowest_std_dev_quantization_err, 1) <= 0.6) and (epoch_counter >= self.epochs):
                 stopping_condition = True
 
     def __initialize(self, samples):
         self.X, self.Y = 4, 4
         self.tau_1 = 8.0
         self.tau_2 = 8.0
-        self.kernel_width = 0
-        self.initial_kernel_width = 0
-        self.learning_rate = 0
-        self.initial_learning_rate = 0
-        self.map = [[0 for col in range(self.X)] for row in range(self.Y)]
+        self.__update_kernel_width(t=0)
+        self.__update_learning_rate(t=0)
+        self.map = [[[0 for i in range(len(samples[0]))] for col in range(self.X)] for row in range(self.Y)]
         self.__hypercube_weight_initialization(samples)
 
     def __find_bmu(self, z):
@@ -53,16 +73,21 @@ class SOM(object):
         for row in range(self.Y):
             for col in range(self.X):
                 w = self.map[row][col]
-                distances.append({
-                    "dist": euclidean(u=z, v=w),
-                    "row": row,
-                    "col": col
-                })
-        lowest_distance = np.Infinity
+                if len(z) == len(w):
+                    distances.append({
+                        "dist": euclidean(u=z, v=w),
+                        "row": row,
+                        "col": col
+                    })
+        lowest = {
+            "dist": np.Infinity,
+            "row": -1,
+            "col": -1
+        }
         for i in range(len(distances)):
-            if distances[i]["dist"] < lowest_distance:
-                lowest_distance = distances[i]
-        return self.map[lowest_distance["row"]][lowest_distance["col"]]
+            if distances[i]["dist"] < lowest["dist"]:
+                lowest = distances[i]
+        return self.map[lowest["row"]][lowest["col"]]
 
     def __hypercube_weight_initialization(self, samples):
         max_i, max_j = self.__get_max_ij(samples)
@@ -82,14 +107,14 @@ class SOM(object):
         w_yx = samples[max_b]  # actually w_XY in literature
         self.map[-1][-1] = w_yx
         for col in range(1, self.X):  # actually x in range(2, X - 1) in map
-            self.map[1][col] = np.add(np.multiply(np.divide(np.subtract(w_0x, w_00), (self.X - 1)), (col - 1)), w_00)
-            self.map[-1][col] = np.add(np.multiply(np.divide(np.subtract(w_yx, w_y0), (self.X - 1)), (col - 1)), w_y0)
+            self.map[1][col] = np.array(np.add(np.multiply(np.divide(np.subtract(w_0x, w_00), (self.X - 1)), (col - 1)), w_00)).tolist()
+            self.map[-1][col] = np.array(np.add(np.multiply(np.divide(np.subtract(w_yx, w_y0), (self.X - 1)), (col - 1)), w_y0)).tolist()
         for row in range(1, self.Y):  # actually y in range(2, Y - 1) in map
-            self.map[row][1] = np.add(np.multiply(np.divide(np.subtract(w_y0, w_00), (self.Y - 1)), (row - 1)), w_00)
-            self.map[row][-1] = np.add(np.multiply(np.divide(np.subtract(w_yx, w_0x), (self.Y - 1)), (row - 1)), w_0x)
+            self.map[row][1] = np.array(np.add(np.multiply(np.divide(np.subtract(w_y0, w_00), (self.Y - 1)), (row - 1)), w_00)).tolist()
+            self.map[row][-1] = np.array(np.add(np.multiply(np.divide(np.subtract(w_yx, w_0x), (self.Y - 1)), (row - 1)), w_0x)).tolist()
             for col in range(1, self.X):
-                self.map[row][col] = np.add(
-                    np.multiply(np.divide(np.subtract(self.map[row][-1], w_y0), (self.X - 1)), (col - 1)), w_y0)
+                self.map[row][col] = np.array(np.add(
+                    np.multiply(np.divide(np.subtract(self.map[row][-1], w_y0), (self.X - 1)), (col - 1)), w_y0)).tolist()
 
     def __random_value_initialization(self, samples):
         extreme = self.__get_extreme(samples)
@@ -105,7 +130,10 @@ class SOM(object):
         self.kernel_width = self.initial_kernel_width * np.power(np.e, (-t / self.tau_2))
 
     def __update_weight(self, current_sample, bmu, current_weight):
-        return current_weight + self.__change_in_weight(current_sample, current_weight, bmu)
+        updated_weight = self.__change_in_weight(current_sample, current_weight, bmu)
+        for i in range(len(current_weight)):
+            updated_weight[i] += current_weight[i]
+        return updated_weight
 
     def __change_in_weight(self, current_sample, current_weight, bmu):
         for i in range(len(current_weight)):
@@ -194,11 +222,14 @@ class SOM(object):
 def main():
     epochs = 100
     iris = load_iris().data
-    train_size = np.floor(len(iris) * 0.75)
-    x_train = iris[:train_size]
+    train_size = int(np.floor(len(iris) * 0.75))
+    x_train = np.array(iris[:train_size]).tolist()
     # x_test = iris[train_size + 1: -1]
     som = SOM(epochs=epochs)
     som.train(samples=x_train)
+    for i in range(som.Y):
+        for j in range(som.X):
+            print("w[{}][{}] => {}".format(i, j, som.map[i][j]))
 
 
 if __name__ == '__main__':
